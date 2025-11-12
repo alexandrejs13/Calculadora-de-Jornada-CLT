@@ -30,6 +30,32 @@ def parse_time_to_minutes(time_str: str) -> int:
         minutes = 0
     return hours * 60 + minutes
 
+def parse_input_to_time(time_input: str) -> time | None:
+    """Tenta converter uma string de entrada (HH:MM ou HH) para um objeto time."""
+    time_input = time_input.strip()
+    if not time_input:
+        return None
+        
+    try:
+        if ':' in time_input:
+            parts = time_input.split(':')
+            hour = int(parts[0])
+            minute = int(parts[1])
+        else:
+            hour = int(time_input)
+            minute = 0
+            
+        # Garante que a hora e o minuto estejam dentro de limites válidos
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return time(hour, minute)
+        else:
+            return None
+            
+    except ValueError:
+        return None
+    except Exception:
+        return None
+
 def time_to_datetime(t, date_offset=0):
     """Converte time para datetime (usando uma data base) e adiciona um offset de dia se necessário."""
     # Usamos uma data base fixa para cálculos
@@ -147,6 +173,10 @@ def main():
 
     jornada_padrao_minutos = 0 # Inicialização
     jornada_texto = ""
+    total_semanal_minutos_target = 0
+    dias_trabalho_semana = 0
+    dias_uteis_no_mes = 0
+
 
     if regime_trabalho == "Jornada Padrão (Semanal)":
         # 1. Jornada Semanal
@@ -174,8 +204,8 @@ def main():
                  jornada_texto = "Jornada inválida"
                  total_semanal_minutos_target = 0
         except:
-            st.error("Formato de jornada semanal inválido. Use 'HH' ou 'HH:MM'.")
-            return
+            # Não exibe erro no carregamento, apenas no cálculo
+            jornada_padrao_minutos = 0
             
         dias_uteis_no_mes = 22 if dias_trabalho_semana == 5 else 26
 
@@ -202,15 +232,15 @@ def main():
     )
     intervalo_minutos = int(intervalo_horas * 60)
     
-    # 4. Horário de Entrada (Aplica-se a ambos)
-    entrada_default = time(8, 0)
+    # 4. Horário de Entrada (INPUT DE TEXTO LIVRE)
+    entrada_default_str = "08:00"
     if regime_trabalho == "Regime 12x36":
-        entrada_default = time(19, 0) # Sugere turno noturno 12x36
+        entrada_default_str = "19:00" # Sugere turno noturno 12x36
     
-    entrada = st.sidebar.time_input(
-        "Horário de Entrada (Livre):",
-        entrada_default,
-        key="entrada"
+    entrada_str = st.sidebar.text_input(
+        "Horário de Entrada (HH:MM ou HH):",
+        entrada_default_str,
+        key="entrada_str"
     )
     
     # Botão de Cálculo
@@ -220,9 +250,16 @@ def main():
     # --- Bloco de Cálculo Condicional ---
     if calcular_button:
         
+        # 4b. Validação do Horário de Entrada
+        entrada = parse_input_to_time(entrada_str)
+        
+        if entrada is None:
+            st.error("Horário de Entrada inválido. Use o formato HH:MM (ex: 08:00) ou apenas HH (ex: 14).")
+            return
+            
         # Revalidação de inputs críticos antes do cálculo principal
         if jornada_padrao_minutos <= 0:
-            st.error("Por favor, insira uma jornada semanal válida antes de calcular.")
+            st.error("Por favor, insira uma jornada semanal válida antes de calcular. Verifique a Carga Horária Semanal.")
             return
 
         data = []
@@ -325,4 +362,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
