@@ -149,6 +149,51 @@ def calculate_exit_time(entrada: time, intervalo_minutos: int, jornada_diaria_mi
         st.error(f"Ocorreu um erro no cálculo: {e}")
         return "Erro", "Erro", "Erro"
 
+def calculate_short_friday_net_minutes(entrada: time, saida: time, intervalo_minutos: int) -> float:
+    """
+    Calcula os minutos líquidos efetivos trabalhados na Sexta, dado o horário de entrada, saída e intervalo.
+    Este cálculo é necessário para redistribuir a jornada restante para Seg-Qui.
+    """
+    t_entrada = time_to_datetime(entrada)
+    t_saida = time_to_datetime(saida)
+    
+    # Se a saída for antes da entrada, assume-se que é no dia seguinte (e.g., turno noturno)
+    if t_saida <= t_entrada:
+        t_saida += timedelta(days=1)
+
+    t_intervalo = timedelta(minutes=intervalo_minutos)
+    
+    current_dt = t_entrada
+    real_minutes_worked = 0
+    effective_minutes_worked = 0.0
+    intervalo_applied = False
+    
+    while current_dt < t_saida:
+        # Ponto de aplicação do Intervalo (após 4 horas reais)
+        if real_minutes_worked >= 240 and not intervalo_applied and intervalo_minutos > 0:
+            current_dt += t_intervalo
+            real_minutes_worked += intervalo_minutos
+            intervalo_applied = True
+            if current_dt >= t_saida:
+                break # Saiu durante o intervalo
+        
+        if current_dt >= t_saida:
+            break # Parar de contar minutos se já passou da hora de saída
+
+        current_hour = current_dt.hour
+        is_night_time = (current_hour >= INICIO_NOITE) or (current_hour < FIM_NOITE)
+
+        if is_night_time:
+            # Hora Noturna Reduzida
+            effective_minutes_worked += FATOR_HORA_NOTURNA
+        else:
+            effective_minutes_worked += 1
+            
+        current_dt += timedelta(minutes=1)
+        real_minutes_worked += 1
+        
+    return effective_minutes_worked
+
 
 def main():
     """Função principal do Streamlit."""
@@ -167,18 +212,52 @@ def main():
 
     regime_trabalho = st.sidebar.radio(
         "Regime de Jornada:",
-        options=["Jornada Padrão (Semanal)", "Regime 12x36"],
+        options=["Jornada Padrão (Semanal)", "Regime 12x36", "Short Friday (Sexta Curta)"],
         index=0
     )
 
-    jornada_padrao_minutos = 0 # Inicialização
+    jornada_padrao_minutos = 0 # Inicialização: Jornada diária se fosse dividida igualmente
     jornada_texto = ""
     total_semanal_minutos_target = 0
     dias_trabalho_semana = 0
     dias_uteis_no_mes = 0
+    is_short_friday = regime_trabalho == "Short Friday (Sexta Curta)"
+    saida_sexta_time = None
+    jornada_sexta_minutos = 0 # Usado apenas para Short Friday
 
+    if is_short_friday:
+        # Short Friday (Sexta Curta) logic
+        
+        # 1. Base Semanal (Sexta Curta sempre assume 5 dias úteis)
+        jornada_semanal_str = st.sidebar.text_input(
+            "Carga Horária Semanal (Base: 44, 40, etc.):",
+            "44",
+            key="jornada_semanal_base_str"
+        )
+        try:
+            total_semanal_minutos_target = parse_time_to_minutes(jornada_semanal_str)
+            if total_semanal_minutos_target <= 0: raise ValueError
+            jornada_padrao_minutos = total_semanal_minutos_target / 5 # Base diária antes da compensação
+            jornada_texto = format_timedelta(timedelta(minutes=jornada_padrao_minutos))
+        except:
+             st.error("Formato de jornada semanal inválido para Short Friday.")
+             return
+             
+        dias_trabalho_semana = 5
+        dias_uteis_no_mes = 22
+        
+        # 2. Entrada específica da Sexta (mesmo campo de entrada geral, mas validado aqui)
+        st.sidebar.markdown("---")
+        saida_sexta_str = st.sidebar.text_input(
+            "Horário de Saída na Sexta (HH:MM ou HH):",
+            "14:00",
+            key="saida_sexta_str"
+        )
+        saida_sexta_time = parse_input_to_time(saida_sexta_str)
+        if saida_sexta_time is None:
+            st.warning("Aguardando Horário de Saída na Sexta no formato HH:MM.")
 
-    if regime_trabalho == "Jornada Padrão (Semanal)":
+    elif regime_trabalho == "Jornada Padrão (Semanal)":
         # 1. Jornada Semanal
         jornada_semanal_str = st.sidebar.text_input(
             "Carga Horária Semanal (Ex: 44, 40, 42:30):",
@@ -194,7 +273,6 @@ def main():
             key="dias_trabalho_semana"
         )
         
-        # Tentativa de cálculo (para exibição e intervalo mínimo)
         try:
             total_semanal_minutos_target = parse_time_to_minutes(jornada_semanal_str)
             if total_semanal_minutos_target > 0 and dias_trabalho_semana > 0:
@@ -204,7 +282,6 @@ def main():
                  jornada_texto = "Jornada inválida"
                  total_semanal_minutos_target = 0
         except:
-            # Não exibe erro no carregamento, apenas no cálculo
             jornada_padrao_minutos = 0
             
         dias_uteis_no_mes = 22 if dias_trabalho_semana == 5 else 26
@@ -216,10 +293,10 @@ def main():
         total_semanal_minutos_target = 42 * 60 # Média de 42h
         dias_uteis_no_mes = 15 
 
-    st.sidebar.markdown(f"**Jornada Diária Líquida Calculada:** **{jornada_texto}**")
+    st.sidebar.markdown(f"**Jornada Diária Líquida Estimada:** **{jornada_texto}**")
 
 
-    # 3. Intervalo (Aplica-se a ambos)
+    # 3. Intervalo (Aplica-se a todos)
     min_intervalo = 1.0 if jornada_padrao_minutos >= 360 else 0.5 
     
     intervalo_horas = st.sidebar.slider(
@@ -235,7 +312,7 @@ def main():
     # 4. Horário de Entrada (INPUT DE TEXTO LIVRE)
     entrada_default_str = "08:00"
     if regime_trabalho == "Regime 12x36":
-        entrada_default_str = "19:00" # Sugere turno noturno 12x36
+        entrada_default_str = "19:00" 
     
     entrada_str = st.sidebar.text_input(
         "Horário de Entrada (HH:MM ou HH):",
@@ -258,7 +335,7 @@ def main():
             return
             
         # Revalidação de inputs críticos antes do cálculo principal
-        if jornada_padrao_minutos <= 0:
+        if total_semanal_minutos_target <= 0:
             st.error("Por favor, insira uma jornada semanal válida antes de calcular. Verifique a Carga Horária Semanal.")
             return
 
@@ -269,11 +346,14 @@ def main():
             if dias_trabalho_semana == 6:
                 dias.append("Sábado")
             
+            # Jornada diária é a jornada padrão calculada no início
+            shift_minutes = jornada_padrao_minutos
+            
             for dia in dias:
                 saida, intervalo_str, jornada_diaria_str = calculate_exit_time(
                     entrada, 
                     intervalo_minutos, 
-                    jornada_padrao_minutos
+                    shift_minutes
                 )
                 
                 data.append({
@@ -285,33 +365,102 @@ def main():
                     "Descanso Após Jornada": "11h (Mínimo CLT)"
                 })
                 
+        elif is_short_friday:
+            
+            if saida_sexta_time is None:
+                st.error("Por favor, informe e valide o Horário de Saída na Sexta.")
+                return
+
+            # 1. Cálculo dos minutos efetivos trabalhados na Sexta (Jornada Fixa)
+            jornada_sexta_minutos = calculate_short_friday_net_minutes(
+                entrada, 
+                saida_sexta_time, 
+                intervalo_minutos
+            )
+            
+            # 2. Redistribuição para Seg-Qui
+            minutes_needed_for_mon_to_thu = total_semanal_minutos_target - jornada_sexta_minutos
+            
+            if minutes_needed_for_mon_to_thu < 0:
+                 st.error("A jornada de Sexta Curta informada excede a Carga Horária Semanal total. Por favor, ajuste a Saída na Sexta.")
+                 return
+                 
+            jornada_seg_a_qui_minutos = minutes_needed_for_mon_to_thu / 4
+            
+            # Limite legal de 10 horas diárias (8h normais + 2h extras compensatórias)
+            if jornada_seg_a_qui_minutos > (10 * 60): 
+                st.error(f"A jornada de Segunda a Quinta ({format_timedelta(timedelta(minutes=jornada_seg_a_qui_minutos))}) excede o limite legal de 10 horas diárias (Art. 59, CLT).")
+                return
+
+
+            # 3. População da Tabela
+            dias = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta"]
+            
+            t_entrada_base = time_to_datetime(entrada)
+
+            for dia in dias:
+                if dia != "Sexta":
+                    # Days Mon-Thu use the redistributed hours
+                    saida, intervalo_str, jornada_diaria_str = calculate_exit_time(
+                        entrada, 
+                        intervalo_minutos, 
+                        jornada_seg_a_qui_minutos
+                    )
+                else:
+                    # Friday uses the fixed exit time and already calculated net time
+                    saida_sexta_str_display = saida_sexta_time.strftime("%H:%M")
+                    # Check if Friday exit is next day (e.g., entry 22:00, exit 01:00)
+                    t_saida_sexta_check = time_to_datetime(saida_sexta_time)
+                    if t_saida_sexta_check <= t_entrada_base:
+                         saida_sexta_str_display += " (+1D)"
+                        
+                    intervalo_str = format_timedelta(timedelta(minutes=intervalo_minutos))
+                    saida = saida_sexta_str_display
+                    jornada_diaria_str = format_timedelta(timedelta(minutes=jornada_sexta_minutos))
+                    
+                data.append({
+                    "Dia": dia,
+                    "Entrada": entrada.strftime("%H:%M"),
+                    "Intervalo": intervalo_str,
+                    "Saída": saida,
+                    "Jornada Diária (Líquida)": jornada_diaria_str,
+                    "Descanso Após Jornada": "11h (Mínimo CLT)"
+                })
+
+
         else: # Regime 12x36
             # Simula 4 dias de trabalho para ilustrar o ciclo 12x36 (12h trabalho / 36h descanso)
             dias = ["Dia 1 (Trabalho)", "Dia 2 (Descanso)", "Dia 3 (Trabalho)", "Dia 4 (Descanso)"]
             
+            # Jornada diária é 12h (720 min)
+            shift_minutes = jornada_padrao_minutos
+
             for i, dia in enumerate(dias):
                 if "Trabalho" in dia:
                     saida, intervalo_str, jornada_diaria_str = calculate_exit_time(
                         entrada, 
                         intervalo_minutos, 
-                        jornada_padrao_minutos # 720 minutos (12h)
+                        shift_minutes
                     )
                     descanso = "36h (Fixa 12x36)"
+                    entrada_disp = entrada.strftime("%H:%M")
                 else:
                     saida = "-"
                     intervalo_str = "-"
                     jornada_diaria_str = "00h 00m"
                     descanso = "Em Descanso 36h"
+                    entrada_disp = "-"
                 
                 data.append({
                     "Dia": dia,
-                    "Entrada": entrada.strftime("%H:%M") if "Trabalho" in dia else "-",
+                    "Entrada": entrada_disp,
                     "Intervalo": intervalo_str,
                     "Saída": saida,
                     "Jornada Diária (Líquida)": jornada_diaria_str,
                     "Descanso Após Jornada": descanso
                 })
 
+        # --- Exibição de Resultados ---
         df = pd.DataFrame(data)
         
         st.subheader("🗓️ Resumo da Jornada Detalhada")
@@ -327,7 +476,7 @@ def main():
             col2_caption = "Valor de referência para cálculo de salário (CLT: 180h/mês)."
             col3_caption = "Média aproximada de dias TRABALHADOS no mês."
         else:
-            # Padrão Semanal
+            # Padrão Semanal e Short Friday
             total_semanal_str = format_timedelta(timedelta(minutes=total_semanal_minutos_target))
             # Cálculo baseado em semanas comerciais (aprox. 5 semanas/mês)
             total_mensal_horas_clt = round(total_semanal_minutos_target / 60 * 5)
